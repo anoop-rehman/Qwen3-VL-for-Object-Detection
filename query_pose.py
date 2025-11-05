@@ -14,11 +14,57 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 
+POSE_LABELS: List[str] = [
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+]
+
+SKELETON_EDGES = [
+    ("nose", "left_eye"),
+    ("nose", "right_eye"),
+    ("left_eye", "left_ear"),
+    ("right_eye", "right_ear"),
+    ("nose", "left_shoulder"),
+    ("nose", "right_shoulder"),
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+]
+
+POSE_LABEL_SET = set(POSE_LABELS)
+
 SYSTEM_PROMPT = (
     "You are an assistant that performs human pose estimation. "
-    "Return only a JSON array where each item is an object with keys "
+    "Return only a JSON array where each element is an object with keys "
     '`"point_2d"` and `"label"`. `"point_2d"` must be a list of two integers '
     "representing x, y coordinates within [0, 1000]. "
+    "Produce exactly one entry for each of the following labels in this order: "
+    f"{', '.join(POSE_LABELS)}. "
+    "If a joint is partially occluded, infer its most likely location. "
     "Do not include any explanations, code fences, or additional text—return the raw JSON only."
 )
 
@@ -201,6 +247,7 @@ def extract_keypoints(body: Dict[str, Any]) -> Sequence[Dict[str, Any]]:
 
 def sanitize_keypoints(keypoints: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cleaned: List[Dict[str, Any]] = []
+    seen_labels: set[str] = set()
     for index, keypoint in enumerate(keypoints):
         if not isinstance(keypoint, dict):
             warn(f"Ignoring keypoint #{index} because it is not an object.")
@@ -245,6 +292,18 @@ def sanitize_keypoints(keypoints: Sequence[Dict[str, Any]]) -> List[Dict[str, An
             label = str(label)
             warn(f"Coercing non-string label on keypoint #{index} to string.")
 
+        if not label:
+            warn(f"Ignoring keypoint #{index} without a label.")
+            continue
+
+        if label in seen_labels:
+            warn(f"Ignoring duplicate keypoint label '{label}' at index {index}.")
+            continue
+
+        if label not in POSE_LABEL_SET:
+            warn(f"Keypoint '{label}' is not part of the expected skeleton.")
+
+        seen_labels.add(label)
         cleaned.append({"point_2d": point_ints, "label": label})
 
     if not cleaned and keypoints:
@@ -273,10 +332,11 @@ def draw_keypoints(image_path: Path, keypoints: List[Dict[str, Any]]) -> Path:
 
     radius = max(3, int(round(min(width, height) * 0.005)))
 
+    pixel_points: Dict[str, tuple[int, int]] = {}
     for keypoint in keypoints:
         point = keypoint.get("point_2d")
         label = keypoint.get("label", "")
-        if not isinstance(point, list):
+        if not isinstance(point, list) or not label:
             continue
 
         try:
@@ -284,9 +344,17 @@ def draw_keypoints(image_path: Path, keypoints: List[Dict[str, Any]]) -> Path:
         except ValueError:
             continue
 
+        pixel_points[label] = (x, y)
+
+    line_color = "cyan"
+    line_width = max(2, radius)
+    for joint_a, joint_b in SKELETON_EDGES:
+        if joint_a in pixel_points and joint_b in pixel_points:
+            draw.line([pixel_points[joint_a], pixel_points[joint_b]], fill=line_color, width=line_width)
+
+    for label, (x, y) in pixel_points.items():
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill="red", outline="white")
-        if label:
-            draw.text((x + radius + 2, y - radius - 2), label, fill="red", font=font)
+        draw.text((x + radius + 2, y - radius - 2), label, fill="red", font=font)
 
     output_path = image_path.with_stem(f"{image_path.stem}_pose")
     image.save(output_path)
@@ -319,6 +387,14 @@ def main() -> None:
     if keypoints and not sanitized_keypoints:
         raise PoseEstimationError(
             "Model returned keypoints but none were usable; review the warnings above."
+        )
+
+    present_labels = {kp["label"] for kp in sanitized_keypoints if kp.get("label")}
+    missing_labels = [label for label in POSE_LABELS if label not in present_labels]
+    if missing_labels:
+        warn(
+            "Model response is missing joints for: "
+            + ", ".join(missing_labels)
         )
 
     output_keypoints = sanitized_keypoints if sanitized_keypoints else keypoints
