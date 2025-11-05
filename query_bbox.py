@@ -6,8 +6,9 @@ import mimetypes
 import os
 import subprocess
 import sys
+from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -20,6 +21,17 @@ SYSTEM_PROMPT = (
     "representing x1, y1, x2, y2 coordinates within [0, 1000]. "
     "Do not include any explanations, code fences, or additional text—return the raw JSON only."
 )
+
+
+REQUEST_TIMEOUT_DEFAULT = 120.0
+
+
+class DetectionError(Exception):
+    """Raised when the model call fails or returns unusable data."""
+
+
+def warn(message: str) -> None:
+    print(f"Warning: {message}", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="qwen3-VL",
+        default="/storage/proj/llm/hf-transformers-models/Qwen3-VL-30B-A3B-Thinking",
         help="Model name to request from the server (default: %(default)s).",
     )
     parser.add_argument(
@@ -47,8 +59,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=1024,
+        default=10000,
         help="Maximum response tokens to request from the model.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=REQUEST_TIMEOUT_DEFAULT,
+        help="Request timeout in seconds for the model API.",
     )
     return parser.parse_args()
 
@@ -158,6 +176,132 @@ def draw_bounding_boxes(
     return output_path
 
 
+def request_completion(api_base: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    url = f"{api_base.rstrip('/')}/chat/completions"
+    try:
+        response = requests.post(url, json=payload, timeout=timeout)
+    except requests.Timeout as exc:
+        raise DetectionError(
+            f"Request to {url} timed out after {timeout:.0f} seconds. "
+            "Increase --timeout or check server load."
+        ) from exc
+    except requests.RequestException as exc:
+        raise DetectionError(f"Failed to reach the model endpoint: {exc}") from exc
+
+    if not response.ok:
+        snippet = response.text[:500]
+        raise DetectionError(
+            f"Model endpoint returned HTTP {response.status_code}. Response snippet: {snippet}"
+        )
+
+    try:
+        body = response.json()
+    except JSONDecodeError as exc:
+        snippet = response.text[:500]
+        raise DetectionError(f"Could not decode JSON response: {exc}. Snippet: {snippet}") from exc
+
+    if isinstance(body, dict) and "error" in body:
+        error_detail = body["error"]
+        if isinstance(error_detail, dict):
+            message = error_detail.get("message") or json.dumps(error_detail)
+        else:
+            message = str(error_detail)
+        raise DetectionError(f"Model returned an error payload: {message}")
+
+    return body
+
+
+def extract_detections(body: Dict[str, Any]) -> Sequence[Dict[str, Any]]:
+    try:
+        choices = body["choices"]
+        if not choices:
+            raise KeyError
+    except (KeyError, TypeError):
+        raise DetectionError("Model response did not include any choices.")
+
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        raise DetectionError(
+            "Generation stopped because it reached the max token limit. "
+            "Increase --max-tokens or reduce the prompt length."
+        )
+    if finish_reason and finish_reason not in ("stop", None):
+        warn(f"Model finish_reason: {finish_reason}")
+
+    try:
+        raw_content = choice["message"]["content"]
+    except KeyError as exc:
+        raise DetectionError("Model response missing message content.") from exc
+
+    raw_text = extract_text_content(raw_content)
+    if not raw_text.strip():
+        raise DetectionError("Model produced an empty response.")
+
+    try:
+        detections = parse_detection_json(raw_text)
+    except (ValueError, TypeError) as exc:
+        raise DetectionError(f"Failed to parse model output as JSON: {exc}") from exc
+
+    if not isinstance(detections, list):
+        raise DetectionError("Model output is not a JSON array.")
+
+    return detections
+
+
+def sanitize_detections(detections: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cleaned: List[Dict[str, Any]] = []
+    for index, detection in enumerate(detections):
+        if not isinstance(detection, dict):
+            warn(f"Ignoring detection #{index} because it is not an object.")
+            continue
+
+        bbox_raw = detection.get("bbox_2d")
+        if not isinstance(bbox_raw, list) or len(bbox_raw) != 4:
+            warn(f"Ignoring detection #{index} with invalid bbox_2d: {bbox_raw}")
+            continue
+
+        bbox: List[float] = []
+        valid_bbox = True
+        for coord in bbox_raw:
+            if isinstance(coord, (int, float)):
+                bbox.append(float(coord))
+            elif isinstance(coord, str):
+                try:
+                    bbox.append(float(coord))
+                except ValueError:
+                    valid_bbox = False
+                    break
+            else:
+                valid_bbox = False
+                break
+
+        if not valid_bbox:
+            warn(f"Ignoring detection #{index} with non-numeric bbox entries: {bbox_raw}")
+            continue
+
+        if any(coord < 0.0 or coord > 1000.0 for coord in bbox):
+            warn(f"Clamping detection #{index} bbox coordinates to [0, 1000].")
+        bbox_ints = [
+            int(round(max(0.0, min(1000.0, value))))
+            for value in bbox
+        ]
+
+        label = detection.get("label", "")
+        if label is None:
+            label = ""
+        elif not isinstance(label, str):
+            label = str(label)
+            warn(f"Coercing non-string label on detection #{index} to string.")
+
+        cleaned.append({"bbox_2d": bbox_ints, "label": label})
+
+    if not cleaned and detections:
+        warn("All detections from the model were discarded due to formatting issues.")
+
+    return cleaned
+
+
 def open_image_viewer(image_path: Path) -> None:
     try:
         if sys.platform.startswith("darwin"):
@@ -167,7 +311,7 @@ def open_image_viewer(image_path: Path) -> None:
         else:
             subprocess.run(["xdg-open", str(image_path)], check=False)
     except Exception as exc:
-        print(f"Failed to open image viewer automatically: {exc}")
+        warn(f"Failed to open image viewer automatically: {exc}")
 
 
 def main() -> None:
@@ -178,31 +322,32 @@ def main() -> None:
     image_data = encode_image(args.image_path)
     payload = build_payload(args.prompt, image_data, args.model, args.temperature, args.max_tokens)
 
-    response = requests.post(
-        f"{args.api_base.rstrip('/')}/chat/completions",
-        json=payload,
-        timeout=120,
-    )
-    response.raise_for_status()
+    body = request_completion(args.api_base, payload, args.timeout)
+    detections = list(extract_detections(body))
+    sanitized_detections = sanitize_detections(detections)
+    if detections and not sanitized_detections:
+        raise DetectionError(
+            "Model returned detections but none were usable; review the warnings above."
+        )
 
-    body = response.json()
-    try:
-        raw_content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError) as error:
-        raise ValueError(f"Unexpected response structure: {body}") from error
+    detections_to_draw = sanitized_detections if sanitized_detections else detections
 
-    raw_text = extract_text_content(raw_content)
-    detections = parse_detection_json(raw_text)
+    output_image = draw_bounding_boxes(args.image_path, detections_to_draw)
 
-    if not isinstance(detections, list):
-        raise ValueError("Model output is not a JSON array.")
-
-    output_image = draw_bounding_boxes(args.image_path, detections)
-
-    print(json.dumps(detections, indent=2))
+    print(json.dumps(detections_to_draw, indent=2))
     print(f"Saved annotated image to: {output_image}")
     open_image_viewer(output_image)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except DetectionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("Interrupted by user.", file=sys.stderr)
+        sys.exit(130)
