@@ -33,6 +33,7 @@ Key flags:
 - `--max-tokens`: Increase if the model truncates responses (default `10000`)
 - `--timeout`: Request timeout in seconds (default `120`)
 - `--save-path`: Optional file or directory to persist the annotated image
+- `--example IMAGE JSON`: Add few-shot examples (image plus JSON annotation). Repeat as needed.
 
 Output:
 
@@ -72,6 +73,7 @@ python batch_detect.py /data/dataset "Detect every pedestrian" detections.jsonl 
 - Writes JSON Lines records as soon as each image finishes: `{"image": "relative/path.jpg", "detections": [...]}`  
   (paths are stored relative to the dataset root so they can be re-used later)
 - `--resume` skips images already present in the output file, enabling crash-safe restarts
+- `--example IMAGE JSON` can inject the same few-shot examples used by `query_bbox.py`
 - Shares the same API tuning flags (`--api-base`, `--model`, `--max-tokens`, `--timeout`, `--temperature`)
 
 No annotated images are saved during batch jobs—the JSONL file is meant for downstream visualization or evaluation scripts.

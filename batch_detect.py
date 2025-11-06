@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from json import JSONDecodeError
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, Iterable, List, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from query_bbox import (
     DetectionError,
@@ -17,6 +17,7 @@ from query_bbox import (
     request_completion,
     sanitize_detections,
     build_payload,
+    load_example_pairs,
 )
 
 DEFAULT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
@@ -83,6 +84,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip images already present in the results file (default: %(default)s).",
     )
+    parser.add_argument(
+        "--example",
+        nargs=2,
+        metavar=("IMAGE", "ANNOTATION"),
+        action="append",
+        help="Provide few-shot examples (image path followed by JSON annotations). Can repeat.",
+    )
     return parser.parse_args()
 
 
@@ -140,9 +148,17 @@ def detect_single_image(
     max_tokens: int,
     api_base: str,
     timeout: float,
+    examples: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     image_data = encode_image(image_path)
-    payload = build_payload(prompt, image_data, model, temperature, max_tokens)
+    payload = build_payload(
+        prompt,
+        image_data,
+        model,
+        temperature,
+        max_tokens,
+        examples=examples,
+    )
     body = request_completion(api_base, payload, timeout)
     detections = list(extract_detections(body))
     sanitized = sanitize_detections(detections)
@@ -177,6 +193,11 @@ def main() -> None:
 
     lock = Lock()
     stop_requested = False
+    example_specs = [
+        (Path(image_path), Path(annotation_path))
+        for image_path, annotation_path in (args.example or [])
+    ]
+    example_payloads = load_example_pairs(example_specs) if example_specs else None
 
     def signal_handler(signum: int, frame: Any) -> None:  # pragma: no cover - system integration
         nonlocal stop_requested
@@ -206,6 +227,7 @@ def main() -> None:
                     args.max_tokens,
                     args.api_base,
                     args.timeout,
+                    example_payloads,
                 )] = rel_path
 
         submit_next()

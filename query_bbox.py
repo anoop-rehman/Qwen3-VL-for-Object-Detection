@@ -6,7 +6,7 @@ import mimetypes
 import sys
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 from PIL import Image, ImageDraw, ImageFont
@@ -71,6 +71,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional path to save the annotated image. Treats directories as output folders.",
     )
+    parser.add_argument(
+        "--example",
+        nargs=2,
+        metavar=("IMAGE", "ANNOTATION"),
+        action="append",
+        help=(
+            "Provide a few-shot example by specifying an image path followed by a JSON file containing "
+            "expected detections. Can be supplied multiple times."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -85,20 +95,47 @@ def encode_image(image_path: Path) -> str:
 
 
 def build_payload(
-    prompt: str, image_data: str, model: str, temperature: float, max_tokens: int
+    prompt: str,
+    image_data: str,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+    examples: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> Dict[str, Any]:
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if examples:
+        for index, (example_image, example_response) in enumerate(examples, 1):
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                f"Example {index}: apply the detection policy exactly and respond with "
+                                "the JSON format described previously."
+                            ),
+                        },
+                        {"type": "input_image", "detail": "auto", "image_url": example_image},
+                    ],
+                }
+            )
+            messages.append({"role": "assistant", "content": example_response})
+
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "detail": "auto", "image_url": image_data},
+            ],
+        }
+    )
+
     return {
         "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "detail": "auto", "image_url": image_data},
-                ],
-            },
-        ],
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -303,6 +340,30 @@ def sanitize_detections(detections: Sequence[Dict[str, Any]]) -> List[Dict[str, 
     return cleaned
 
 
+def load_example_pairs(pairs: Sequence[Tuple[Path, Path]]) -> List[Tuple[str, str]]:
+    examples: List[Tuple[str, str]] = []
+    for image_path, json_path in pairs:
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Example image not found: {image_path}")
+        if not json_path.is_file():
+            raise FileNotFoundError(f"Example annotation not found: {json_path}")
+
+        image_data = encode_image(image_path)
+        with json_path.open("r", encoding="utf-8") as handle:
+            try:
+                parsed = json.load(handle)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in example annotation {json_path}: {exc}") from exc
+
+        if not isinstance(parsed, list):
+            raise ValueError(f"Example annotation must be a JSON array: {json_path}")
+
+        sanitized = sanitize_detections(parsed)
+        example_json = sanitized if sanitized else parsed
+        examples.append((image_data, json.dumps(example_json, separators=(",", ":"))))
+    return examples
+
+
 def resolve_save_path(requested: Path, source_image: Path, suffix: str) -> Path:
     extension = source_image.suffix or ".png"
     if requested.exists() and requested.is_dir():
@@ -324,8 +385,20 @@ def main() -> None:
     if not args.image_path.is_file():
         raise FileNotFoundError(f"Image not found: {args.image_path}")
 
+    example_specs = [
+        (Path(image_path), Path(annotation_path)) for image_path, annotation_path in (args.example or [])
+    ]
+    examples = load_example_pairs(example_specs) if example_specs else []
+
     image_data = encode_image(args.image_path)
-    payload = build_payload(args.prompt, image_data, args.model, args.temperature, args.max_tokens)
+    payload = build_payload(
+        args.prompt,
+        image_data,
+        args.model,
+        args.temperature,
+        args.max_tokens,
+        examples=examples,
+    )
 
     body = request_completion(args.api_base, payload, args.timeout)
     detections = list(extract_detections(body))
