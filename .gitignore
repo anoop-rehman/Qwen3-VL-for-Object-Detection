@@ -19,3 +19,4 @@ dist/
 *.bmp
 *.gif
 .DS_Store
+*.jsonl

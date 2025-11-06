@@ -76,6 +76,21 @@ python batch_detect.py /data/dataset "Detect every pedestrian" detections.jsonl 
 
 No annotated images are saved during batch jobs—the JSONL file is meant for downstream visualization or evaluation scripts.
 
+## Visualization (`visualize_results.py`)
+
+Convert detection logs back into images with side-by-side comparisons:
+
+```bash
+python visualize_results.py /data/dataset detections.jsonl labeled_outputs/
+```
+
+- Reads the JSON Lines file produced by `batch_detect.py`
+- Recreates directory structure under the chosen output root, appending `_labeled` to filenames
+- Produces a composite image with the original on the left and the annotated version on the right
+- Skip existing outputs unless `--overwrite` is provided
+
+This makes it easy to inspect detections manually without modifying the source dataset.
+
 ## Troubleshooting
 
 - `Error: Generation stopped because it reached the max token limit`  

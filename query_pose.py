@@ -336,11 +336,11 @@ def normalize_point(point: List[int], width: int, height: int) -> List[int]:
     ]
 
 
-def render_keypoints(image_path: Path, keypoints: List[Dict[str, Any]]) -> Image.Image:
-    image = Image.open(image_path).convert("RGB")
-    draw = ImageDraw.Draw(image)
+def render_keypoints(image: Image.Image, keypoints: List[Dict[str, Any]]) -> Image.Image:
+    output = image.copy()
+    draw = ImageDraw.Draw(output)
     font = ImageFont.load_default()
-    width, height = image.size
+    width, height = output.size
 
     radius = max(3, int(round(min(width, height) * 0.005)))
 
@@ -368,7 +368,7 @@ def render_keypoints(image_path: Path, keypoints: List[Dict[str, Any]]) -> Image
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill="red", outline="white")
         draw.text((x + radius + 2, y - radius - 2), label, fill="red", font=font)
 
-    return image
+    return output
 
 
 def show_image(image: Image.Image, title: str) -> None:
@@ -403,7 +403,8 @@ def main() -> None:
         )
 
     output_keypoints = sanitized_keypoints if sanitized_keypoints else keypoints
-    annotated_image = render_keypoints(args.image_path, output_keypoints)
+    original_image = Image.open(args.image_path).convert("RGB")
+    annotated_image = render_keypoints(original_image, output_keypoints)
 
     print(json.dumps(output_keypoints, indent=2))
 

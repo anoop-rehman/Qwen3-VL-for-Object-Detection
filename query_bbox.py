@@ -151,12 +151,12 @@ def normalize_bbox(
 
 
 def render_bounding_boxes(
-    image_path: Path, detections: List[Dict[str, Any]]
+    image: Image.Image, detections: List[Dict[str, Any]]
 ) -> Image.Image:
-    image = Image.open(image_path).convert("RGB")
-    draw = ImageDraw.Draw(image)
+    output = image.copy()
+    draw = ImageDraw.Draw(output)
     font = ImageFont.load_default()
-    width, height = image.size
+    width, height = output.size
 
     for detection in detections:
         bbox = detection.get("bbox_2d")
@@ -174,7 +174,7 @@ def render_bounding_boxes(
             text_pos = (x1, max(0, y1 - 12))
             draw.text(text_pos, label, fill="red", font=font)
 
-    return image
+    return output
 
 
 def request_completion(api_base: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
@@ -337,7 +337,8 @@ def main() -> None:
 
     detections_to_draw = sanitized_detections if sanitized_detections else detections
 
-    annotated_image = render_bounding_boxes(args.image_path, detections_to_draw)
+    original_image = Image.open(args.image_path).convert("RGB")
+    annotated_image = render_bounding_boxes(original_image, detections_to_draw)
 
     print(json.dumps(detections_to_draw, indent=2))
 
