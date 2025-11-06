@@ -57,8 +57,24 @@ The system prompt asks the model for the canonical 17 joints (nose, eyes, ears, 
 - Renders a skeleton overlay (`*_pose.*`) with cyan bones and red joint markers
 - Opens the annotated image automatically
 
-You can tune `--max-tokens`, `--timeout`, or request a different model with `--model`.
-- Use `--save-path` to persist the rendered skeleton to a specific directory or file; otherwise only the viewer opens.
+You can tune `--max-tokens`, `--timeout`, or request a different model with `--model`. Use `--save-path` to persist the rendered skeleton to a specific directory or file; otherwise only the viewer opens.
+
+## Batch Dataset Processing (`batch_detect.py`)
+
+Run inference over an entire dataset tree and store detections incrementally:
+
+```bash
+python batch_detect.py /data/dataset "Detect every pedestrian" detections.jsonl --max-workers 6
+```
+
+- Recursively scans the dataset root for common image types (override with `--extensions`)
+- Keeps multiple requests in flight with `--max-workers` (vLLM handles batching server-side)
+- Writes JSON Lines records as soon as each image finishes: `{"image": "relative/path.jpg", "detections": [...]}`  
+  (paths are stored relative to the dataset root so they can be re-used later)
+- `--resume` skips images already present in the output file, enabling crash-safe restarts
+- Shares the same API tuning flags (`--api-base`, `--model`, `--max-tokens`, `--timeout`, `--temperature`)
+
+No annotated images are saved during batch jobs—the JSONL file is meant for downstream visualization or evaluation scripts.
 
 ## Troubleshooting
 
