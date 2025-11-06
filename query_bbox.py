@@ -81,6 +81,16 @@ def parse_args() -> argparse.Namespace:
             "expected detections. Can be supplied multiple times."
         ),
     )
+    parser.add_argument(
+        "--context-image",
+        action="append",
+        metavar="IMAGE",
+        help=(
+            "Include an additional reference image alongside the prompt. "
+            "The final image argument is still treated as the one to analyze. "
+            "Can be supplied multiple times."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -101,8 +111,12 @@ def build_payload(
     temperature: float,
     max_tokens: int,
     examples: Optional[Sequence[Tuple[str, str]]] = None,
+    context_images: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if examples and context_images:
+        raise ValueError("Specify either --example or --context-image, not both.")
 
     if examples:
         for index, (example_image, example_response) in enumerate(examples, 1):
@@ -123,15 +137,22 @@ def build_payload(
             )
             messages.append({"role": "assistant", "content": example_response})
 
-    messages.append(
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": prompt},
-                {"type": "input_image", "detail": "auto", "image_url": image_data},
-            ],
-        }
+    content: List[Dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+    if context_images:
+        for index, image_url in enumerate(context_images, 1):
+            content.append(
+                {
+                    "type": "input_image",
+                    "detail": "auto",
+                    "image_url": image_url,
+                }
+            )
+
+    content.append(
+        {"type": "input_image", "detail": "auto", "image_url": image_data}
     )
+
+    messages.append({"role": "user", "content": content})
 
     return {
         "model": model,
@@ -364,6 +385,15 @@ def load_example_pairs(pairs: Sequence[Tuple[Path, Path]]) -> List[Tuple[str, st
     return examples
 
 
+def load_context_images(paths: Sequence[Path]) -> List[str]:
+    encoded_images: List[str] = []
+    for image_path in paths:
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Context image not found: {image_path}")
+        encoded_images.append(encode_image(image_path))
+    return encoded_images
+
+
 def resolve_save_path(requested: Path, source_image: Path, suffix: str) -> Path:
     extension = source_image.suffix or ".png"
     if requested.exists() and requested.is_dir():
@@ -390,6 +420,9 @@ def main() -> None:
     ]
     examples = load_example_pairs(example_specs) if example_specs else []
 
+    context_specs = [Path(path) for path in (args.context_image or [])]
+    context_images = load_context_images(context_specs) if context_specs else None
+
     image_data = encode_image(args.image_path)
     payload = build_payload(
         args.prompt,
@@ -398,6 +431,7 @@ def main() -> None:
         args.temperature,
         args.max_tokens,
         examples=examples,
+        context_images=context_images,
     )
 
     body = request_completion(args.api_base, payload, args.timeout)

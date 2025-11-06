@@ -18,6 +18,7 @@ from query_bbox import (
     sanitize_detections,
     build_payload,
     load_example_pairs,
+    load_context_images,
 )
 
 DEFAULT_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
@@ -91,6 +92,12 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Provide few-shot examples (image path followed by JSON annotations). Can repeat.",
     )
+    parser.add_argument(
+        "--context-image",
+        action="append",
+        metavar="IMAGE",
+        help="Reference image to include before the target image. Can repeat.",
+    )
     return parser.parse_args()
 
 
@@ -149,6 +156,7 @@ def detect_single_image(
     api_base: str,
     timeout: float,
     examples: Optional[Sequence[Tuple[str, str]]] = None,
+    context_images: Optional[Sequence[str]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     image_data = encode_image(image_path)
     payload = build_payload(
@@ -158,6 +166,7 @@ def detect_single_image(
         temperature,
         max_tokens,
         examples=examples,
+        context_images=context_images,
     )
     body = request_completion(api_base, payload, timeout)
     detections = list(extract_detections(body))
@@ -197,7 +206,13 @@ def main() -> None:
         (Path(image_path), Path(annotation_path))
         for image_path, annotation_path in (args.example or [])
     ]
+    context_specs = [Path(path) for path in (args.context_image or [])]
     example_payloads = load_example_pairs(example_specs) if example_specs else None
+    context_payloads = None
+    if context_specs:
+        context_payloads = load_context_images(context_specs)
+    if example_payloads and context_payloads:
+        raise ValueError("Specify either --example or --context-image, not both.")
 
     def signal_handler(signum: int, frame: Any) -> None:  # pragma: no cover - system integration
         nonlocal stop_requested
@@ -228,6 +243,7 @@ def main() -> None:
                     args.api_base,
                     args.timeout,
                     example_payloads,
+                    context_payloads,
                 )] = rel_path
 
         submit_next()
