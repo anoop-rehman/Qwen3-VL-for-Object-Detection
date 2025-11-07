@@ -97,6 +97,22 @@ python visualize_results.py /data/dataset detections.jsonl labeled_outputs/
 
 This makes it easy to inspect detections manually without modifying the source dataset.
 
+## Classification Metrics (`evaluate_classification.py`)
+
+When a dataset only indicates whether an image contains zero vs. one-or-more target objects, you can still
+score the detector by collapsing the JSONL output into binary predictions:
+
+```bash
+python evaluate_classification.py detections.jsonl \
+  --positive-regex "positives/" \
+  --negative-regex "negatives/" \
+  --unmatched-policy skip
+```
+
+- `--positive-regex` is required and should match every positive sample's relative path.
+- `--negative-regex` is optional; if omitted, unmatched samples follow `--unmatched-policy` (defaults to skip).
+- Metrics include accuracy, precision, recall, F1, specificity, and a confusion matrix.
+
 ## Troubleshooting
 
 - `Error: Generation stopped because it reached the max token limit`  
