@@ -182,27 +182,26 @@ def build_payload(
         )
     else:
         if context_images:
-            messages.append({"role": "user", "content": [{"type": "input_text", "text": prompt}]})
-            for index, image_url in enumerate(context_images, 1):
-                descriptor = (
-                    "Here is a reference image related to the instructions."
-                    if index == 1
-                    else "This is the next image."
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": descriptor},
-                            {"type": "input_image", "detail": "auto", "image_url": image_url},
-                        ],
-                    }
-                )
+            whole_prompt = f"The user has requested you to '{prompt}'\n\nThe user has provided the attached images to accompanying the request. The images might aid in fulfilling the request. Answer OK, if you have understood the request. I'll attach the accompaning image after that."
             messages.append(
                 {
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": "This is the next image."},
+                        {"type": "input_text", "text": whole_prompt},
+                    ] + [{"type": "input_image", "detail": "auto", "image_url": image_url} for image_url in context_images ]
+                }
+            )
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "OK",
+                }
+            )
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "This is the image."},
                         {"type": "input_image", "detail": "auto", "image_url": image_data},
                     ],
                 }
