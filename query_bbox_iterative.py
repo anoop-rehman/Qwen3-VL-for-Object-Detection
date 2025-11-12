@@ -113,7 +113,7 @@ def detections_to_prompt_json(detections: List[Dict[str, Any]]) -> str:
         entry = {
             "id": det.get("id"),
             "label": det.get("label", ""),
-            "bbox": det.get("bbox_2d", []),
+            "bbox_2d": det.get("bbox_2d", []),
         }
         prompt_entries.append(entry)
     return json.dumps(prompt_entries, ensure_ascii=False, separators=(",", ":"))
