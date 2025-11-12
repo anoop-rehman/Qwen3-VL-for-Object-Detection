@@ -538,6 +538,13 @@ def main() -> None:
 
     show_image(annotated_image, title=f"{args.image_path.name} detections")
 
+@lru_cache(maxsize=None)
+def get_label_font(size: int = 16) -> ImageFont.ImageFont:
+    """Load a readable font once, falling back to the default bitmap font."""
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size=size)
+    except OSError:
+        return ImageFont.load_default()
 
 if __name__ == "__main__":
     try:
@@ -551,10 +558,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Interrupted by user.", file=sys.stderr)
         sys.exit(130)
-@lru_cache(maxsize=None)
-def get_label_font(size: int = 16) -> ImageFont.ImageFont:
-    """Load a readable font once, falling back to the default bitmap font."""
-    try:
-        return ImageFont.truetype("DejaVuSans.ttf", size=size)
-    except OSError:
-        return ImageFont.load_default()
