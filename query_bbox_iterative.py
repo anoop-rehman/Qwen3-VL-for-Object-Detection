@@ -70,7 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        help="Directory to store per-iteration visualizations. Defaults to <image>_iterations next to the image.",
+        help="Optional directory to store per-iteration visualizations. "
+        "When omitted, iterations are only displayed at the end.",
     )
     return parser.parse_args()
 
@@ -84,15 +85,6 @@ def encode_pil_image(image: Image.Image) -> str:
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{encoded}"
-
-
-def ensure_output_dir(image_path: Path, requested: Optional[Path]) -> Path:
-    if requested:
-        requested.mkdir(parents=True, exist_ok=True)
-        return requested
-    default_dir = image_path.parent / f"{image_path.stem}_iterations"
-    default_dir.mkdir(parents=True, exist_ok=True)
-    return default_dir
 
 
 def assign_detection_ids(detections: List[Dict[str, Any]]) -> None:
@@ -163,6 +155,7 @@ def render_with_ids(image: Image.Image, detections: Sequence[Dict[str, Any]]) ->
 
 def save_iteration_image(output_dir: Path, image_stem: str, iteration: int, image: Image.Image) -> Path:
     path = output_dir / f"{image_stem}_iter_{iteration:02d}.png"
+    output_dir.mkdir(parents=True, exist_ok=True)
     image.save(path)
     return path
 
@@ -255,13 +248,22 @@ def request_refinement(
     return usable
 
 
+def display_iterations(images: Sequence[Tuple[int, Image.Image]]) -> None:
+    for iteration, image in images:
+        title = f"bbox iteration {iteration}"
+        try:
+            image.show(title=title)
+        except Exception as exc:  # pragma: no cover - best effort utility
+            warn(f"Failed to display iteration {iteration}: {exc}")
+
+
 def iterative_refinement(args: argparse.Namespace) -> None:
     if not args.image_path.is_file():
         raise FileNotFoundError(f"Image not found: {args.image_path}")
 
     original_image = Image.open(args.image_path).convert("RGB")
     original_image_data = encode_image(args.image_path)
-    output_dir = ensure_output_dir(args.image_path, args.output_dir)
+    output_dir = args.output_dir
     image_stem = args.image_path.stem
 
     detections, pretty_json = initial_detection(args, original_image_data)
@@ -271,8 +273,12 @@ def iterative_refinement(args: argparse.Namespace) -> None:
     print(pretty_json)
 
     overlay = render_with_ids(original_image, detections)
-    saved_path = save_iteration_image(output_dir, image_stem, 0, overlay)
-    print(f"Iteration 0 visualization saved to {saved_path}")
+    iteration_images: List[Tuple[int, Image.Image]] = [(0, overlay.copy())]
+    if output_dir:
+        path = save_iteration_image(output_dir, image_stem, 0, overlay)
+        print(f"Iteration 0 visualization saved to {path}")
+    else:
+        print("Iteration 0 visualization prepared (displayed later).")
 
     for iteration in range(1, args.max_iterations + 1):
         overlay_data = encode_pil_image(overlay)
@@ -287,11 +293,17 @@ def iterative_refinement(args: argparse.Namespace) -> None:
         detections = refined
         signature = new_signature
         overlay = render_with_ids(original_image, detections)
-        saved_path = save_iteration_image(output_dir, image_stem, iteration, overlay)
-        print(f"Iteration {iteration} visualization saved to {saved_path}")
+        iteration_images.append((iteration, overlay.copy()))
+        if output_dir:
+            path = save_iteration_image(output_dir, image_stem, iteration, overlay)
+            print(f"Iteration {iteration} visualization saved to {path}")
+        else:
+            print(f"Iteration {iteration} visualization prepared (displayed later).")
 
     print("Final detections:")
     print(json.dumps(detections, ensure_ascii=False, indent=2))
+    print("Displaying iteration overlays...")
+    display_iterations(iteration_images)
 
 
 def main() -> None:
