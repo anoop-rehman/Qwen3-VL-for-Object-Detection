@@ -19,7 +19,7 @@ dist/
 *.bmp
 *.gif
 .DS_Store
-*.jsonl
+/*.jsonl
 tmp/
 experiments/
 labeled-bbox-dataset-examples/
