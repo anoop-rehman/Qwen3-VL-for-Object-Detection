@@ -3,6 +3,7 @@ import argparse
 import json
 import signal
 import sys
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from json import JSONDecodeError
@@ -129,6 +130,23 @@ def parse_args() -> argparse.Namespace:
         metavar="IMAGE",
         help="Reference image to include before the target image. Can repeat.",
     )
+    parser.add_argument(
+        "--generation-details-path",
+        type=Path,
+        help=(
+            "Optional path for per-sample generation details JSONL. "
+            "Defaults to a file alongside the results, prefixed with 'generation_details_'."
+        ),
+    )
+    parser.add_argument(
+        "--generation-arguments-path",
+        type=Path,
+        help=(
+            "Optional path for a single JSON file capturing the arguments used for this run. "
+            "Defaults to a file alongside the results, prefixed with 'generation_arguments_' and "
+            "using a .json extension."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -177,6 +195,46 @@ def append_result(results_path: Path, lock: Lock, record: Dict[str, Any]) -> Non
             handle.write("\n")
 
 
+def append_generation_details(details_path: Path, lock: Lock, record: Dict[str, Any]) -> None:
+    payload = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    with lock:
+        with details_path.open("a", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.write("\n")
+
+
+def derive_details_path(results_path: Path) -> Path:
+    return results_path.with_name(f"generation_details_{results_path.name}")
+
+
+def derive_arguments_path(results_path: Path) -> Path:
+    base = results_path.with_name(f"generation_arguments_{results_path.name}")
+    try:
+        return base.with_suffix(".json")
+    except ValueError:
+        return base
+
+
+def serialize_args_for_json(args: argparse.Namespace) -> Dict[str, Any]:
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+
+    return {key: normalize(value) for key, value in vars(args).items()}
+
+
+def write_arguments_file(path: Path, payload: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        warn(f"Failed to write arguments file to {path}: {exc}")
+
+
 def detect_single_image(
     image_path: Path,
     rel_path: str,
@@ -193,7 +251,7 @@ def detect_single_image(
     timeout: float,
     examples: Optional[Sequence[Tuple[str, str]]] = None,
     context_images: Optional[Sequence[str]] = None,
-) -> Tuple[str, List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     image_data = encode_image(image_path)
     payload = build_payload(
         prompt,
@@ -209,8 +267,10 @@ def detect_single_image(
         examples=examples,
         context_images=context_images,
     )
+    start_time = time.perf_counter()
     body = request_completion(api_base, payload, timeout)
-    detections, raw_text, raw_body, _ = extract_detections(body)
+    elapsed = time.perf_counter() - start_time
+    detections, raw_text, raw_body, metadata = extract_detections(body)
     detections = list(detections)
     sanitized = sanitize_detections(detections)
     if detections and not sanitized:
@@ -218,7 +278,19 @@ def detect_single_image(
             f"Image '{rel_path}' produced detections but none were usable."
             + format_debug_info(raw_text, raw_body)
         )
-    return rel_path, sanitized if sanitized else detections
+    detections_to_use = sanitized if sanitized else detections
+    cot_text = metadata.get("cot_output") if isinstance(metadata, dict) else None
+    finish_reason = metadata.get("finish_reason") if isinstance(metadata, dict) else None
+    generation_record = {
+        "image": rel_path,
+        "elapsed_seconds": elapsed,
+        "assistant_text": raw_text,
+        "cot_text": cot_text,
+        "finish_reason": finish_reason,
+        "detections": detections_to_use,
+        "response": body,
+    }
+    return rel_path, detections_to_use, generation_record
 
 
 def main() -> None:
@@ -226,9 +298,21 @@ def main() -> None:
     dataset_root = args.dataset_root.resolve()
     if not dataset_root.is_dir():
         raise FileNotFoundError(f"Dataset root not found or not a directory: {dataset_root}")
+    args.dataset_root = dataset_root
 
     extensions = normalize_extensions(args.extensions or DEFAULT_EXTENSIONS)
     ensure_output_directory(args.results_path)
+    details_path = args.generation_details_path or derive_details_path(args.results_path)
+    arguments_path = args.generation_arguments_path or derive_arguments_path(args.results_path)
+
+    argument_payload = serialize_args_for_json(args)
+    argument_payload.update(
+        {
+            "generation_details_path": str(details_path),
+            "generation_arguments_path": str(arguments_path),
+        }
+    )
+    write_arguments_file(arguments_path, argument_payload)
 
     processed_records = load_existing_results(args.results_path) if args.resume else {}
     processed_paths = set(processed_records.keys())
@@ -244,6 +328,7 @@ def main() -> None:
     print(f"Discovered {len(images)} images. Processed entries loaded: {len(processed_paths)}")
 
     lock = Lock()
+    details_lock = Lock()
     stop_requested = False
     example_specs = [
         (Path(image_path), Path(annotation_path))
@@ -266,7 +351,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures: Dict[Future[Tuple[str, List[Dict[str, Any]]]], str] = {}
+        futures: Dict[Future[Tuple[str, List[Dict[str, Any]], Dict[str, Any]]], str] = {}
         pending = deque(images)
 
         def submit_next() -> None:
@@ -301,12 +386,13 @@ def main() -> None:
                 for future in as_completed(list(futures.keys())):
                     rel_path = futures.pop(future)
                     try:
-                        image_key, detections = future.result()
+                        image_key, detections, generation_record = future.result()
                         record = {
                             "image": image_key,
                             "detections": detections,
                         }
                         append_result(args.results_path, lock, record)
+                        append_generation_details(details_path, details_lock, generation_record)
                         processed_paths.add(image_key)
                         print(f"Processed {image_key} ({len(detections)} detections)")
                     except DetectionError as exc:
