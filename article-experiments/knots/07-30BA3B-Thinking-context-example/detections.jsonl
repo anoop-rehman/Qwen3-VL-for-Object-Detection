@@ -87,7 +87,6 @@
 {"image":"Images - 1/100100011.jpg","detections":[{"bbox_2d":[350,250,550,450],"label":"knot_with_crack"},{"bbox_2d":[250,850,400,920],"label":"Crack"}]}
 {"image":"Images - 1/100100023.jpg","detections":[{"bbox_2d":[710,0,730,120],"label":"Crack"},{"bbox_2d":[370,790,440,875],"label":"knot_with_crack"}]}
 {"image":"Images - 1/100100034.jpg","detections":[{"bbox_2d":[482,802,549,879],"label":"Dead_Knot"}]}
-{"image":"Images - 1/100100033.jpg","detections":[{"bbox_2d":[230,666,253,982],"label":"resin"}]}
 {"image":"Images - 1/100100031.jpg","detections":[{"bbox_2d":[92,679,142,717],"label":"Dead_Knot"},{"bbox_2d":[392,0,569,517],"label":"knot_with_crack"}]}
 {"image":"Images - 1/100100028.jpg","detections":[{"bbox_2d":[520,950,700,998],"label":"Crack"}]}
 {"image":"Images - 1/100100026.jpg","detections":[{"bbox_2d":[681,46,699,336],"label":"resin"},{"bbox_2d":[352,606,373,635],"label":"Dead_Knot"},{"bbox_2d":[638,572,699,625],"label":"Dead_Knot"}]}
