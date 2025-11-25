@@ -226,13 +226,13 @@ def load_results(results_path: Path) -> Dict[str, List[Dict[str, Any]]]:
 def draw_ground_truth(image: Image.Image, boxes: Sequence[Dict[str, Any]]) -> Image.Image:
     output = image.copy()
     draw = ImageDraw.Draw(output)
-    font = get_label_font(18)
+    font = get_label_font(50)
     for box in boxes:
         x1, y1, x2, y2 = box["bbox"]
         label = box.get("label", "")
         draw.rectangle([x1, y1, x2, y2], outline="green", width=3)
         if label:
-            text_pos = (x1, max(0, y1 - 12))
+            text_pos = (x1, max(0, y1 - 52))
             draw.text(text_pos, label, fill="green", font=font)
     return output
 

@@ -335,8 +335,8 @@ def render_bounding_boxes(
 
         draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
         if label:
-            text_pos = (x1, max(0, y1 - 12))
-            #draw.text(text_pos, label, fill="red", font=font)
+            text_pos = (x1, max(0, y1 - 52))
+            draw.text(text_pos, label, fill="red", font=font)
 
     return output
 
