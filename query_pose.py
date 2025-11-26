@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="/storage/proj/llm/hf-transformers-models/Qwen3-VL-30B-A3B-Thinking",
+        default="qwen3-vl",
         help="Model name to request from the server (default: %(default)s).",
     )
     parser.add_argument(

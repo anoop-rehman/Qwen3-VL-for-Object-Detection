@@ -29,7 +29,7 @@ python query_bbox.py path/to/image.jpg "Find every bicycle and rider"
 Key flags:
 
 - `--api-base`: OpenAI-compatible base URL (default `http://10.88.0.1:8000/v1`)
-- `--model`: Model name served by vLLM (default `/storage/proj/llm/hf-transformers-models/Qwen3-VL-30B-A3B-Thinking`)
+- `--model`: Model name served by vLLM (default `qwen3-vl`)
 - `--temperature`, `--top-p`, `--top-k`, `--repetition-penalty`, `--presence-penalty`, `--seed`: Decoding controls (defaults match script help)
 - `--max-tokens`: Increase if the model truncates responses (default `10000`)
 - `--timeout`: Request timeout in seconds (default `120`)
