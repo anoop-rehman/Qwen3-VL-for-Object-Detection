@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="qwen3-vl",
+        default="qwen-vl",
         help="Model name to request from the server (default: %(default)s).",
     )
     parser.add_argument(
@@ -269,17 +269,25 @@ def build_payload(
 
 
 def extract_text_content(message_content: Any) -> str:
+    if message_content is None:
+        return ""
     if isinstance(message_content, str):
         return message_content
-    if isinstance(message_content, Iterable):
+    if isinstance(message_content, Iterable) and not isinstance(message_content, (str, bytes)):
         fragments: List[str] = []
         for item in message_content:
             if isinstance(item, dict):
                 text = item.get("text") or item.get("content")
                 if isinstance(text, str):
                     fragments.append(text)
+            elif isinstance(item, str):
+                fragments.append(item)
         return "".join(fragments)
-    raise ValueError("Unexpected message content format.")
+    # Try to convert to string as a last resort
+    try:
+        return str(message_content)
+    except Exception:
+        raise ValueError(f"Unexpected message content format: {type(message_content)}")
 
 
 def parse_detection_json(raw_text: str) -> List[Dict[str, Any]]:
@@ -393,6 +401,7 @@ def extract_detections(body: Dict[str, Any]) -> Tuple[Sequence[Dict[str, Any]], 
             partial_text = extract_text_content(message_block.get("content", "")) or ""
         except Exception:
             partial_text = str(message_block.get("content", ""))
+        # Check for reasoning_content (used by reasoning_parser)
         rc = message_block.get("reasoning_content")
         if rc:
             if isinstance(rc, str):
@@ -402,6 +411,17 @@ def extract_detections(body: Dict[str, Any]) -> Tuple[Sequence[Dict[str, Any]], 
                     cot_output = "".join(rc)
                 except Exception:
                     cot_output = str(rc)
+        # Also check for "reasoning" field (alternative format)
+        if not cot_output:
+            rc = message_block.get("reasoning")
+            if rc:
+                if isinstance(rc, str):
+                    cot_output = rc
+                else:
+                    try:
+                        cot_output = "".join(rc)
+                    except Exception:
+                        cot_output = str(rc)
 
     finish_reason = choice.get("finish_reason")
     if finish_reason == "length":
@@ -440,11 +460,29 @@ def extract_detections(body: Dict[str, Any]) -> Tuple[Sequence[Dict[str, Any]], 
         warn(f"Model finish_reason: {finish_reason}")
 
     try:
-        raw_content = choice["message"]["content"]
-    except KeyError as exc:
-        raise DetectionError("Model response missing message content.") from exc
+        raw_content = choice["message"].get("content")
+    except (KeyError, AttributeError) as exc:
+        # Try to get more info about the response structure for debugging
+        message_debug = json.dumps(choice.get("message", {}), indent=2, default=str)
+        raise DetectionError(
+            f"Model response missing message content. Message structure: {message_debug}"
+        ) from exc
 
-    raw_text = extract_text_content(raw_content)
+    try:
+        raw_text = extract_text_content(raw_content) if raw_content is not None else ""
+    except ValueError as exc:
+        # Provide more context about what we received
+        content_debug = json.dumps(raw_content, indent=2, default=str) if raw_content is not None else "None"
+        raise DetectionError(
+            f"Failed to extract text from message content: {exc}\n"
+            f"Content received: {content_debug}"
+        ) from exc
+    
+    # With reasoning_parser, content might be empty and the actual response is in reasoning_content
+    if not raw_text.strip() and cot_output:
+        raw_text = cot_output
+        cot_output = ""  # Clear cot_output since we're using it as main content
+    
     if not raw_text.strip():
         raise DetectionError("Model produced an empty response." + format_debug_info(raw_text, body))
 
