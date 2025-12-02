@@ -5,12 +5,12 @@ Usage: python detect_and_visualize.py <image_path> <prompt> [output_dir]
 """
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 
-from query_bbox import request_completion, encode_image, build_payload, extract_detections, sanitize_detections
-from visualize_results import load_results, process_dataset
+from query_bbox import request_completion, encode_image, build_payload, extract_detections, sanitize_detections, render_bounding_boxes
+from visualize_results import create_side_by_side
+from PIL import Image
 
 
 def main():
@@ -40,6 +40,12 @@ def main():
         type=int,
         default=10000,
         help="Max tokens (default: 10000)",
+    )
+    parser.add_argument(
+        "--output-filename",
+        type=str,
+        default=None,
+        help="Custom output filename (e.g., 'my_result.png'). If not specified, uses default naming: '{image_stem}_labeled{extension}'",
     )
     args = parser.parse_args()
 
@@ -88,17 +94,25 @@ def main():
     print(f"Created {results_path}")
 
     print("Step 3: Visualizing results...")
-    dataset_root = args.image_path.parent.resolve()
-    if str(dataset_root) == ".":
-        dataset_root = Path(".").resolve()
-    
     output_root = args.output_dir.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
 
-    results = {image_name: detections_to_use}
-    processed, skipped = process_dataset(dataset_root, results, output_root, overwrite=True)
+    # Load original image
+    original_image = Image.open(args.image_path).convert("RGB")
+    annotated_image = render_bounding_boxes(original_image, detections_to_use)
+    combined = create_side_by_side(original_image, annotated_image)
+
+    # Determine output filename
+    if args.output_filename:
+        output_path = output_root / args.output_filename
+    else:
+        # Use default naming scheme
+        extension = args.image_path.suffix or ".png"
+        output_path = output_root / f"{args.image_path.stem}_labeled{extension}"
+
+    combined.save(output_path)
     
-    print(f"\n✓ Complete! Visualization saved to: {output_root}/{args.image_path.stem}_labeled{args.image_path.suffix}")
+    print(f"\n✓ Complete! Visualization saved to: {output_path}")
 
 
 if __name__ == "__main__":
